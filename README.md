@@ -1,5 +1,8 @@
 # CV Agent Project
 
+[[ CV_agent file 안에 output file 에 들어가면 auto CV html 완성본(예시본) 이 들어있습니다. ]]
+
+
 ## 1. 프로젝트 소개
 
 이 프로젝트는 LangChain / LangGraph 기반의 AI Agent와 Tool 사용 방식을 학습하기 위해 제작한 CV 자동 생성 프로젝트임.
