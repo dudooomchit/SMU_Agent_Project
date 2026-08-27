@@ -3,14 +3,24 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Any
-from langchain_core.messages import SystemMessage
 from langchain.agents.middleware import before_agent, wrap_tool_call, AgentState
 from langgraph.runtime import Runtime
 
+from typing import Annotated, TypedDict
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
+
+
+
+
+
 from langchain.agents import create_agent
 # TODO: 팀에서 생성한 커스텀 도구를 import 하세요
-# 예시: from custom_tools import CUSTOM_TOOLS
-from tools import web_search
+# 예시: from custom_tools import CUSTOM_TOOLS . 
+from tools import outwork_search
 
 
 def create_coding_agent():
@@ -35,17 +45,24 @@ def create_coding_agent():
 모든 응답은 친절하고 전문적인 한글로 작성하세요."""
 
    # 에이전트 생성
+    # DAEO_AGENT_TOOLS는 이 파일 아래쪽에서 정의되지만,
+    # create_coding_agent()는 그 뒤에 호출되므로 참조 시점에는 이미 존재합니다.
     agent_executor = create_agent(
         model="gpt-5.4-mini",
-        tools=[web_search],  # TODO: 여기를 팀의 도구로 변경
-        system_prompt=system_prompt
+        tools=[outwork_search, *DAEO_AGENT_TOOLS],
+        system_prompt=system_prompt,
+        middleware=[
+            workspace_index_middleware,      # @before_agent: workspace 파일 인덱싱
+            inject_user_profile_middleware,  # @before_agent: 사용자 프로필 주입
+            auto_backup_middleware,          # @wrap_tool_call: 파일 수정 전 백업
+        ],
     )
 
     return agent_executor
 
 
-# LangGraph Studio에서 사용할 에이전트 내보내기
-agent = create_coding_agent()
+# NOTE: agent 인스턴스 생성은 미들웨어 정의가 모두 끝난 아래쪽에서 수행합니다.
+#       (여기서 호출하면 미들웨어가 아직 정의되지 않아 NameError)
 
 # TODO: 팀에서 생성한 모든 도구를 리스트로 추가하세요
 
@@ -77,34 +94,71 @@ DAEO_SITES = [
     "campuspick.com",
 ]
 
+from langchain_tavily import TavilySearch
+# 레시피 전문 검색 도구
+outwork_search = TavilySearch(
+    max_results=5,
+    include_domains=[
+        "allforyoung.com",
+        "gokams.or.kr",
+        "youth.seoul.go.kr",
+        "univ20.com",
+        "wevity.com",
+        "satisfy.kr",
+        "jobaba.net",
+        "contestkorea.com",
+        "linkareer.com",
+        "campuspick.com",
+    ],
+)
 
-def _search_google(query: str, max_results: int, site_filter: str | None = None) -> list[dict]:
-    """구글 검색을 수행하는 헬퍼 함수"""
-    import urllib.parse
-    import urllib.request
-    from bs4 import BeautifulSoup
 
-    encoded_query = urllib.parse.quote_plus(query)
-    if site_filter:
-        search_url = f"https://www.google.com/search?q=site%3A{urllib.parse.quote_plus(site_filter)}+{encoded_query}"
-    else:
-        search_url = f"https://www.google.com/search?q={encoded_query}"
+# Tavily가 돌려주는 본문 요약의 최대 길이(자).
+# Tavily는 건당 1,200~1,500자를 반환하는데, 그대로 쓰면 검색 한 번에
+# 도구 출력이 7,000자를 넘어 LLM 컨텍스트를 크게 잡아먹습니다.
+SUMMARY_MAX_CHARS = 300
 
-    req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=10) as response:
-        html = response.read().decode("utf-8", errors="ignore")
-    soup = BeautifulSoup(html, "html.parser")
+
+def _tavily_search(
+    query: str,
+    max_results: int,
+    site_filter: str | None = None,
+    summary_max_chars: int = SUMMARY_MAX_CHARS,
+) -> list[dict]:
+    """Tavily로 검색을 수행하고 {'title', 'link', 'summary'} 목록으로 반환하는 헬퍼.
+
+    site_filter를 지정하면 해당 도메인으로만 한정해 검색합니다.
+    summary_max_chars를 0 이하로 주면 요약을 자르지 않고 전문을 반환합니다.
+    (기존 BeautifulSoup 기반 _search_google을 Tavily로 대체한 함수입니다.)
+    """
+    search = TavilySearch(
+        max_results=max_results,
+        include_domains=[site_filter] if site_filter else None,
+    )
+    response = search.invoke({"query": query})
+
+    # TavilySearch는 {"results": [...]} 형태의 dict를 반환합니다.
+    raw_results = response.get("results", []) if isinstance(response, dict) else (response or [])
 
     results = []
-    for a in soup.select("a"):
-        href = a.get("href", "")
-        title = a.get_text(" ", strip=True)
-        if href.startswith("/url?q=") and title:
-            link = href.split("/url?q=")[1].split("&")[0]
-            if link.startswith("http"):
-                results.append({"title": title, "link": link})
-                if len(results) >= max_results:
-                    break
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        link = item.get("url", "")
+        if not link:
+            continue
+
+        summary = " ".join((item.get("content") or "").split())
+        if 0 < summary_max_chars < len(summary):
+            summary = summary[:summary_max_chars].rstrip() + "…"
+
+        results.append({
+            "title": item.get("title", ""),
+            "link": link,
+            "summary": summary,
+        })
+        if len(results) >= max_results:
+            break
     return results
 
 
@@ -393,7 +447,7 @@ def search_daeo_activities_websites(query: str, max_results: int = 5) -> str:
         seen_links = set()
 
         for site in DAEO_SITES:
-            site_results = _search_google(query, max_results, site)
+            site_results = _tavily_search(query, max_results, site)
             for item in site_results:
                 if item["link"] in seen_links:
                     continue
@@ -402,7 +456,7 @@ def search_daeo_activities_websites(query: str, max_results: int = 5) -> str:
                     "title": item["title"],
                     "site": site,
                     "link": item["link"],
-                    "summary": "(검색 엔진에서 요약을 가져오지 못했습니다)",
+                    "summary": item["summary"] or "(요약 없음)",
                 })
                 if len(results) >= max_results:
                     break
@@ -436,7 +490,7 @@ def search_web(query: str, max_results: int = 5) -> str:
         검색 결과 또는 오류 메시지
     """
     try:
-        results = _search_google(query, max_results)
+        results = _tavily_search(query, max_results)
         if not results:
             return f"검색 결과가 없습니다: {query}"
 
@@ -445,6 +499,7 @@ def search_web(query: str, max_results: int = 5) -> str:
         for item in results:
             is_duplicate_daeo = any(site in item["link"] for site in DAEO_SITES)
             item["duplicate_text"] = "중복된 대외활동" if is_duplicate_daeo else ""
+            item["summary"] = item["summary"] or "(요약 없음)"
             if is_duplicate_daeo:
                 duplicate_results.append(item)
             else:
@@ -456,7 +511,7 @@ def search_web(query: str, max_results: int = 5) -> str:
             lines.append("[대외활동과 중복된 결과]")
             for idx, item in enumerate(duplicate_results, start=1):
                 lines.append(
-                    f"[{idx}] 제목: {item['title']} / {item['duplicate_text']}\n링크: {item['link']}\n요약: (검색 엔진에서 요약을 가져오지 못했습니다)"
+                    f"[{idx}] 제목: {item['title']} / {item['duplicate_text']}\n링크: {item['link']}\n요약: {item['summary']}"
                 )
                 lines.append("-" * 60)
             lines.append("")
@@ -465,7 +520,7 @@ def search_web(query: str, max_results: int = 5) -> str:
             lines.append("[일반 웹 결과]")
             for idx, item in enumerate(normal_results, start=1):
                 lines.append(
-                    f"[{idx}] 제목: {item['title']}\n링크: {item['link']}\n요약: (검색 엔진에서 요약을 가져오지 못했습니다)"
+                    f"[{idx}] 제목: {item['title']}\n링크: {item['link']}\n요약: {item['summary']}"
                 )
                 lines.append("-" * 60)
 
@@ -711,11 +766,17 @@ def workspace_index_middleware(state: AgentState, runtime: Runtime) -> dict[str,
     return {"messages": [system_message]}
 
 
+# 기존 파일을 덮어쓰거나 삭제하는 도구 = 백업이 필요한 도구
+# (edit_file은 아직 없지만, 나중에 추가되어도 자동으로 백업되도록 함께 넣어둡니다)
+BACKUP_TARGET_TOOLS = {"write_file", "delete_file", "edit_file"}
+
+
 @wrap_tool_call
 async def auto_backup_middleware(request, handler):
     """Auto Backup Middleware
 
-    edit_file 도구로 파일을 수정하기 전에 자동으로 백업을 생성합니다.
+    파일을 덮어쓰거나 삭제하는 도구(BACKUP_TARGET_TOOLS)를 실행하기 전에
+    자동으로 백업을 생성합니다.
     백업 파일은 backup/ 디렉터리에 "파일명_YYYYMMDD_HHMMSS.확장자" 형식으로 저장됩니다.
 
     예시:
@@ -724,8 +785,8 @@ async def auto_backup_middleware(request, handler):
     tool_name = request.tool_call["name"]
     tool_args = request.tool_call.get("args", {})
 
-    # edit_file 도구만 백업
-    if tool_name != "edit_file":
+    # 파일을 변경하는 도구만 백업
+    if tool_name not in BACKUP_TARGET_TOOLS:
         return await handler(request)
 
     file_path = tool_args.get("file_path")
@@ -744,8 +805,14 @@ async def auto_backup_middleware(request, handler):
 
         # 현재 시각으로 백업 파일명 생성
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"{name_without_ext}_{timestamp}{ext}"
-        backup_path = backup_dir / backup_filename
+        backup_path = backup_dir / f"{name_without_ext}_{timestamp}{ext}"
+
+        # 타임스탬프가 초 단위라 같은 초에 두 번 수정하면 앞선 백업을 덮어씁니다.
+        # 이미 있으면 -2, -3 … 을 붙여 충돌을 피합니다.
+        seq = 2
+        while backup_path.exists():
+            backup_path = backup_dir / f"{name_without_ext}_{timestamp}-{seq}{ext}"
+            seq += 1
 
         # 파일 복사
         shutil.copy2(file_path, backup_path)
@@ -755,7 +822,7 @@ async def auto_backup_middleware(request, handler):
         print(f"[Auto Backup] ⚠️ 백업 실패: {e}")
         # 백업 실패해도 원본 작업은 진행
 
-    # 원본 edit_file 도구 실행
+    # 원본 도구 실행
     return await handler(request)
 
 
@@ -772,58 +839,152 @@ def inject_user_profile_middleware(state, runtime):
     return {"messages": [SystemMessage(content=user_profile)]}
 
 
-from typing import Annotated, TypedDict
-from typing_extensions import Required
-from langchain_core.messages import BaseMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.checkpoint.memory import MemorySaver
+# LangGraph Studio에서 사용할 에이전트 내보내기
+# 위 미들웨어 3개가 모두 정의된 뒤에 호출해야 하므로 여기에 위치합니다.
+# (아래쪽에서 inject_user_profile_middleware가 일반 함수로 재정의되기 때문에
+#  이 줄을 파일 맨 끝으로 옮기면 미들웨어가 아닌 엉뚱한 함수가 바인딩됩니다.)
+agent = create_coding_agent()
 
-# 1. 에이전트가 기억할 State 정의
+
+# ==================================================================
+# 사용자 프로필 온보딩 그래프
+#
+# 원래 이 아래에 State/미들웨어/그래프 정의가 3벌 중복되어 있었고,
+# 같은 이름(ActivityAgentState, inject_user_profile_middleware,
+# builder, memory, app)이 서로를 덮어써서 앞의 정의가 모두 사라졌습니다.
+# 세 버전의 기능을 합쳐 하나로 통합한 것이 아래 코드입니다.
+# ==================================================================
+
+# ------------------------------------------------------------------
+# [1] State 정의 (3개 버전의 필드를 모두 합친 단일 정의)
+# ------------------------------------------------------------------
 class ActivityAgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]  # 대화 히스토리
+    user_id: str                                          # 사용자 식별 ID
+    user_profile: dict                                    # 주입된 사용자 프로필 정보
+    is_onboarding: bool                                   # 온보딩(정보 수집) 진행 중 여부
     preferred_category: str                               # 선호 카테고리 (예: 마케팅, IT)
     preferred_region: str                                 # 선호 지역 (예: 서울, 경기)
 
-# 2. 간단한 노드 함수 구현
-def process_user_input(state: ActivityAgentState):
-    # 이전 상태값 및 메시지 확인
-    last_message = state["messages"][-1].content
-    category = state.get("preferred_category", "미정")
-    
-    # 간이 파싱 예시 (실제로는 LLM 사용)
-    new_category = category
-    if "마케팅" in last_message:
-        new_category = "마케팅"
-    elif "IT" in last_message or "개발" in last_message:
-        new_category = "IT"
 
-    response_text = f"현재 설정된 분야: [{new_category}]. 어떤 공고를 찾아드릴까요?"
+# ------------------------------------------------------------------
+# [Mock DB] 실제 환경에서는 PostgreSQL, MongoDB 등의 DB 조회 로직으로 대체
+#           (기존의 mock_db와 USER_DB를 하나로 합쳤습니다)
+# ------------------------------------------------------------------
+USER_DB: dict[str, dict] = {
+    "user_123": {
+        "name": "김스무",
+        "major": "컴퓨터공학과",
+        "grade": "3학년",
+        "interests": ["IT/SW", "AI", "빅데이터"],
+        "region": "서울",
+    }
+}
+
+
+def get_user_profile_from_db(user_id: str) -> dict:
+    """user_id로 프로필을 조회합니다. 없으면 빈 dict를 반환합니다."""
+    return USER_DB.get(user_id, {})
+
+
+# ------------------------------------------------------------------
+# [2] 프로필 미들웨어 노드
+#     - DB에 프로필이 있으면 State에 자동 주입
+#     - 없으면 수집 질문을 던지고, 답변이 오면 DB에 저장
+# ------------------------------------------------------------------
+def profile_onboarding_middleware(state: ActivityAgentState):
+    """사용자 프로필을 조회·주입하거나, 없으면 온보딩으로 수집·저장하는 미들웨어"""
+    user_id = state.get("user_id")
+    last_message = state["messages"][-1].content if state.get("messages") else ""
+
+    # 이미 State에 프로필이 있으면 DB 조회를 건너뛰어 성능 최적화
+    profile = state.get("user_profile") or (get_user_profile_from_db(user_id) if user_id else {})
+
+    # CASE A: 프로필이 있는 경우 -> 주입 후 통과
+    if profile:
+        return {"user_profile": profile, "is_onboarding": False}
+
+    # CASE B: 이전 턴의 수집 질문에 대한 답변이 온 경우 -> DB에 저장
+    if state.get("is_onboarding") and last_message:
+        # 실제 서비스에서는 LLM/Pydantic으로 정교하게 파싱
+        new_profile = {"raw_info": last_message, "status": "configured"}
+        if user_id:
+            USER_DB[user_id] = new_profile
+        return {
+            "user_profile": new_profile,
+            "is_onboarding": False,
+            "messages": [AIMessage(content="프로필 정보가 성공적으로 등록되었습니다! 원하시는 대외활동이나 공모전을 물어보세요.")],
+        }
+
+    # CASE C: 프로필도 없고 온보딩도 시작되지 않은 최초 상태 -> 수집 질문
     return {
-        "messages": [("assistant", response_text)],
-        "preferred_category": new_category
+        "is_onboarding": True,
+        "messages": [AIMessage(content="맞춤형 추천을 위해 간단한 정보가 필요해요. **전공과 학년, 관심 분야**를 입력해 주세요!")],
     }
 
-# 3. 그래프 구성
+# ------------------------------------------------------------------
+# [3] 프로필 정보를 활용하는 LLM 추천 노드
+#     (하드코딩 문자열을 돌려주던 main_recommend_agent 대신
+#      실제 LLM을 호출하는 이 노드 하나로 통일했습니다)
+# ------------------------------------------------------------------
+def call_agent_llm(state: ActivityAgentState):
+    profile = state.get("user_profile", {})
+
+    # 프로필 정보를 바탕으로 시스템 프롬프트(System Prompt) 동적 구성
+    if profile.get("raw_info"):
+        # 온보딩으로 방금 수집한 원문 프로필
+        profile_context = (
+            f"사용자가 입력한 정보: {profile['raw_info']}\n\n"
+            f"위 정보를 참고하여 대외활동/공모전을 맞춤 추천해 주세요."
+        )
+    elif profile:
+        # DB에 저장되어 있던 구조화된 프로필
+        profile_context = (
+            f"사용자 정보:\n"
+            f"- 이름: {profile.get('name', '미지정')}\n"
+            f"- 전공/학년: {profile.get('major', '미지정')} / {profile.get('grade', '미지정')}\n"
+            f"- 관심 분야: {', '.join(profile.get('interests', []))}\n"
+            f"- 거주 지역: {profile.get('region', '미지정')}\n\n"
+            f"위 사용자 스펙과 관심사를 참고하여 대외활동/공모전을 맞춤 추천해 주세요."
+        )
+    else:
+        profile_context = "사용자 프로필 정보가 없습니다. 일반적인 안내를 제공해 주세요."
+
+    system_message = SystemMessage(
+        content=f"당신은 대학생 대외활동 맞춤 추천 AI 에이전트입니다.\n\n{profile_context}"
+    )
+
+    # LLM 호출 (시스템 메시지 + 이전 대화 기록)
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+    response = llm.invoke([system_message] + state["messages"])
+
+    return {"messages": [response]}
+
+
+# ------------------------------------------------------------------
+# [4] 조건부 라우팅 (미들웨어 판단 결과에 따른 분기)
+# ------------------------------------------------------------------
+def route_after_middleware(state: ActivityAgentState):
+    # 온보딩 질문이 나갔거나 프로필이 아직 없으면 여기서 종료
+    if state.get("is_onboarding") or not state.get("user_profile"):
+        return END
+    return "recommend_agent"
+
+
+# ------------------------------------------------------------------
+# [5] 그래프 파이프라인 구성 (단일 정의)
+# ------------------------------------------------------------------
 builder = StateGraph(ActivityAgentState)
-builder.add_node("process", process_user_input)
-builder.add_edge(START, "process")
-builder.add_edge("process", END)
 
-# 4. Checkpointer(메모리) 생성 및 그래프 컴파일
+# 미들웨어 노드와 추천 노드 추가
+builder.add_node("profile_middleware", profile_onboarding_middleware)
+builder.add_node("recommend_agent", call_agent_llm)
+
+# 흐름 연결: 시작 -> 프로필 미들웨어 -> (분기) -> 추천 노드 -> 종료
+builder.add_edge(START, "profile_middleware")
+builder.add_conditional_edges("profile_middleware", route_after_middleware)
+builder.add_edge("recommend_agent", END)
+
+# Checkpointer(메모리)를 통해 thread_id별로 대화 맥락 유지
 memory = MemorySaver()
-graph = builder.compile(checkpointer=memory)
-
-# --- 실행 테스트 ---
-# 동일한 thread_id를 사용하면 대화 맥락이 유지됩니다.
-config = {"configurable": {"thread_id": "user_session_123"}}
-
-# 첫 번째 대화
-res1 = graph.invoke({"messages": [("user", "안녕! 나 마케팅 대외활동 찾고 있어.")]}, config)
-print("에이전트 1차 응답:", res1["messages"][-1].content)
-
-# 두 번째 대화 (선호 카테고리가 기억에 남아 있음)
-res2 = graph.invoke({"messages": [("user", "공모전 위주로만 추천해줘.")]}, config)
-print("에이전트 2차 응답:", res2["messages"][-1].content)
-print("저장된 카테고리:", res2["preferred_category"])
-
+app = builder.compile(checkpointer=memory)
