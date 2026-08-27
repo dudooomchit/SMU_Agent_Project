@@ -1,88 +1,64 @@
-# Agent System
+# 상명 AI Training · 팀 프로젝트 (7·8일차) Tool 기반 AI Agent 시스템
 
-LangChain create_agent 기반 에이전트 시스템 구현 실습 자료입니다.
+## 개요
 
-## 환경 설정
-
-### 1. uv 설치
-
-#### Windows (PowerShell)
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-#### macOS / Linux
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
+* **7일차 팀프로젝트 (AI Agent 목표 및 도구 설계):** 대학생 및 취업준비생의 대외활동·공모전 탐색 비용을 줄이기 위해 에이전트의 목표와 역할을 정의하고, 실시간 웹 탐색·맞춤 추천·파일 관리·코드 실행 등 12종의 핵심 도구(Tools)를 설계함.
+* **8일차 팀프로젝트 (미들웨어 설계 및 구현):** 대화 맥락 유지와 사용자 맞춤형 응답 제공을 위해 **Checkpointer 기반 대화 상태 기억**, **사용자 프로필 동적 주입 미들웨어**, **프로필 자동 수집 및 DB 저장 시스템**을 구축하고 통합 테스트를 진행함.
 
 ---
 
-### 2. 가상환경 생성 및 패키지 설치
+## 1. [7일차] AI Agent 목표 및 도구 설계
 
-```bash
-cd smu-ai-service-bootcamp
-cd agent-system
+### 해결하고자 하는 문제 (Problem Statement)
 
-# pyproject.toml을 기반으로 가상환경 생성 및 패키지 설치
-uv sync
+* **정보 파편화 및 탐색 비용 증가:** 링커리어, 캠퍼스픽, 위비티, 콘테스트코리아 등 수많은 대외활동 플랫폼에 정보가 분산되어 있어 일일이 검색하는 데 막대한 시간과 노력이 소모됨.
+* **맞춤형 정보 제공의 한계:** 직무, 관심 분야, 선호 혜택에 적합한 공고를 추천받기 어렵고, 합격 후기나 관련 연관 검색어를 함께 파악하기 불투명함.
 
-# 가상환경 활성화 (Windows)
-.venv\Scripts\activate
+### Agent의 역할 (Agent Role)
 
-# 가상환경 활성화 (macOS/Linux)
-source .venv/bin/activate
-```
+* **통합 탐색 및 실시간 정보 추적:** 주요 플랫폼의 공고를 조건별로 조회하고, 실시간 웹 검색을 통해 최신 공고 및 합격 후기·팁을 도출함.
+* **지능형 맞춤 추천:** 사용자의 희망 직무, 관심 분야, 선호 혜택을 다각도로 분석하여 최적의 대외활동 및 공모전을 매칭 점수 기반으로 추천함.
+
+### 도구(Tool) 목록 (12종)
+
+| 도구명 | 입력 (Input) | 출력 (Output) | 주요 역할 |
+| --- | --- | --- | --- |
+| **`search_platform_activities`** | `platform`, `keyword`, `category`, `start_date`, `end_date` | 공고 목록 (JSON) | 주요 대외활동 사이트 공고를 조건별 통합 조회 |
+| **`get_activity_url`** | `activity_id`, `title` | 원본 URL 및 안내 문구 | 대외활동 원본 모집 페이지 상세 링크 안내 |
+| **`recommend_by_user_preference`** | `user_interests`, `target_job`, `preferred_benefit` | 맞춤 공고 목록 (JSON) | 희망 직무 및 선호 혜택 기반 매칭 점수 추천 |
+| **`recommend_related_trending`** | `query`, `sort_by` | 연관 검색어 및 인기 게시글 (JSON) | 연관 키워드 도출 및 인기/최신 합격 후기·팁 연계 추천 |
+| **`search_daeo_activities_websites`** | `query`, `max_results` | 검색 결과 문자열 | 8개 주요 대외활동 전문 플랫폼 타겟 실시간 웹 검색 |
+| **`search_web`** | `query`, `max_results` | 검색 결과 문자열 | 일반 웹 영역 실시간 검색 (대외활동 중복 여부 구분) |
+| **`read_file`** | `file_path` | 텍스트 내용 및 총 줄 수 | 로컬 저장소의 자소서, 메모 등 텍스트 파일 읽기 |
+| **`write_file`** | `file_path`, `content` | 성공/실패 메시지 및 총 줄 수 | 지원서 초안, 요약본 파일 생성 및 내용 작성 |
+| **`delete_file`** | `file_path` | 성공/실패 메시지 | 불필요한 임시 파일 및 기존 파일 삭제 |
+| **`create_directory`** | `dir_path` | 성공/실패 메시지 | 지원 관리용 폴더(디렉터리) 생성 |
+| **`list_directory`** | `dir_path` | 파일/폴더 목록 문자열 | 폴더 내부 구조 및 파일 크기 조회 |
+| **`execute_python_code`** | `code` | 코드 실행 결과 (stdout, stderr) | 작성된 파이썬 코드 실제 실행 및 데이터 가공/연산 |
 
 ---
 
-### 3. Jupyter Notebook 커널 등록
+## 2. [8일차] 미들웨어 설계, 구현 및 테스트
 
-VS Code에서 Jupyter Notebook을 사용하려면 커널을 등록해야 합니다.
+### 핵심 미들웨어 Architecture
 
-#### Windows
-
-```powershell
-.venv\Scripts\python.exe -m ipykernel install --user --name=ai-service-agent --display-name="ai service agent"
-```
-
-#### macOS/Linux
-
-```bash
-.venv/bin/python -m ipykernel install --user --name=ai-service-agent --display-name="ai service agent"
-```
-
-커널 등록 후 **VS Code를 리로드**하면 노트북에서 "ai service agent" 커널을 선택할 수 있습니다.
+1. **Checkpointer 활용 세션 및 대화 상태 기억**
+* 사용자 `session_id` 또는 `thread_id` 기반으로 이전 대화 맥락과 진행 상태를 유실 없이 기억.
+* 여러 단계의 도구 호출(Tool Calling) 과정에서도 유저의 최초 의도와 연속된 질문 흐름 유지.
 
 
-### 4. 환경 변수 설정
+2. **사용자 프로필 동적 주입 미들웨어 (Dynamic Profile Injection)**
+* 에이전트 실행 시, DB에 저장된 사용자의 희망 직무, 관심 분야, 작성된 자소서 정보 등 **개인화 프로필**을 시스템 프롬프트에 실시간 주입.
+* 유저가 매번 자신의 스펙이나 희망 사항을 재입력하지 않아도 개인 맞춤형 공고 추천 및 답변 제공.
 
-루트 디렉토리에 `.env` 파일을 생성하고 다음 내용을 작성하세요:
 
-```bash
-OPENAI_API_KEY=your_openai_api_key_here
-TAVILY_API_KEY=your_tavily_api_key_here
-```
+3. **프로필 수집 및 저장 구현 코드 (Profile Collector)**
+* 대화 과정에서 자연스럽게 드러나는 유저의 정보(예: "나 IT 기획 직무 준비 중이야")를 감지 및 추출.
+* 감지된 사용자 특성을 DB에 자동으로 업데이트 및 저장하는 비동기 미들웨어 파이프라인 구현.
 
-### 5. LangGraph Studio 실행
 
-```bash
-# LangGraph Studio 시작
-uv run langgraph dev
-```
+## 4. 프로젝트 성과 및 기대 효과
 
-#### Windows (PowerShell)
-
-```powershell
-$env:PYTHONUTF8=1; uv run langgraph dev --no-reload --allow-blocking
-```
-
-#### Mac/Linux (bash/zsh)
-
-```
-PYTHONUTF8=1 uv run langgraph dev --no-reload --allow-blocking
-```
-
-브라우저에서 `http://127.0.0.1:2024` 자동 열림
+* **탐색 및 공수 절감:** 8개 이상의 파편화된 대외활동 사이트를 일일이 방문할 필요 없이 단일 대화형 에이전트로 조건 조회부터 실시간 탐색까지 완결.
+* **상태 지속형(Stateful) 맞춤 서비스:** Checkpointer 및 프로필 주입 미들웨어를 통해 사용자를 완벽히 기억하고 context에 입각한 지능형 추천 수행.
+* **지원 과정의 End-to-End 자동화:** 단순 검색에 그치지 않고 자소서 초안 작성, 파일 저장, 글자 수 계산 등 실무 지원 프로세스를 통합 지원함.
