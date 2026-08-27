@@ -1,7 +1,13 @@
 from langchain.agents import create_agent
 # TODO: 팀에서 생성한 커스텀 도구를 import 하세요
 # 예시: from custom_tools import CUSTOM_TOOLS
-from tools import web_search
+from tools import outwork_search
+from middleware import (
+    DAEO_AGENT_TOOLS,
+    workspace_index_middleware,
+    inject_user_profile_middleware,
+    auto_backup_middleware,
+)
 
 
 def create_coding_agent():
@@ -23,7 +29,7 @@ def create_coding_agent():
 4. 파일 수정/삭제 및 시스템 작업을 수행할 때는 사전에 안전성과 필요성을 확인한 후 진행하세요.
 5. 검색 결과가 없거나 에러가 발생하면 원인을 명확히 설명하고 대체 검색 조건이나 해결 방법을 제시하세요.
 
-모든 응답은 친절하고 전문적인 한글로 작성하세요."""
+모든 응답은 친절하고 전문적인 한글로 작성하세요.."""
 
 
     # TODO: 에이전트에 사용할 도구 리스트를 변경하세요
@@ -35,8 +41,13 @@ def create_coding_agent():
     # 에이전트 생성
     agent_executor = create_agent(
         model="gpt-5.4-mini",
-        tools=[web_search],  # TODO: 여기를 팀의 도구로 변경
-        system_prompt=system_prompt
+        tools=[outwork_search, *DAEO_AGENT_TOOLS],
+        system_prompt=system_prompt,
+        middleware=[
+            workspace_index_middleware,      # @before_agent: workspace 파일 인덱싱
+            inject_user_profile_middleware,  # @before_agent: 사용자 프로필 주입
+            auto_backup_middleware,          # @wrap_tool_call: 파일 수정 전 백업
+        ],
     )
 
     return agent_executor
