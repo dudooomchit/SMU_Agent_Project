@@ -556,7 +556,7 @@ DAEO_SITES = [
 
 from langchain_tavily import TavilySearch
 # 레시피 전문 검색 도구
-web_search = TavilySearch(
+outwork_search = TavilySearch(
     max_results=5,
     include_domains=[
         "allforyoung.com",

@@ -22,4 +22,5 @@ dependencies = [
     "streamlit>=1.40.0",
     "requests>=2.31.0",
     "jsonpatch>=1.33",
+    "jsonpointer"
 ]
