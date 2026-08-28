@@ -117,7 +117,7 @@ LangGraph Studio 환경에서 에이전트 그래프가 사용자 상태를 수�
 <img width="403" height="282" alt="image" src="https://github.com/user-attachments/assets/b2662e10-8b57-406d-aa21-1cc4c31dade4" />
 
 ## 실행 결과
-### 질문: 이번 달 마감하는 마케팅 대외활동 중에서 활동비 많이 주는 순서대로 정렬해서 분석해줘.
+질문: 이번 달 마감하는 마케팅 대외활동 중에서 활동비 많이 주는 순서대로 정렬해서 분석해줘.
 <img width="1699" height="1291" alt="image" src="https://github.com/user-attachments/assets/2cfa1a9a-fc46-4325-8ab6-e80d7af882f6" />
 <img width="2160" height="895" alt="image" src="https://github.com/user-attachments/assets/97a66e18-2193-4da9-9c73-d73b8d8faee3" />
 <img width="2160" height="895" alt="image" src="https://github.com/user-attachments/assets/1508a8fb-9b46-406c-a29b-d4b20c4524c8" />
