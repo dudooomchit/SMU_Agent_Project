@@ -6,7 +6,7 @@
 #     tool3,
 # ]
 
-# print(f"총 {len(CUSTOM_TOOLS)}개의 도구가 준비되었습니다.\n")
+# print(f"총 {len(CUSTOM_TOOLS)}개의 도구가 화가나게 준비되었습니다.\n")
 
 # for i, tool in enumerate(CUSTOM_TOOLS, 1):
 #     print(f"{i}. {tool.name}")
